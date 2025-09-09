@@ -1,0 +1,104 @@
+name: Matrix builds (Python) + Docker + Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Test on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, 3.10, 3.11]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: pytest -q
+
+  build-and-push:
+    name: Build & push Docker image (Python ${{ matrix.python-version }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, 3.10, 3.11]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for cross-platform builds)
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            PYTHON_VERSION=${{ matrix.python-version }}
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/matrix-app:py${{ matrix.python-version }}
+
+  deploy:
+    name: Deploy selected Python image to EC2
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v0.1.6
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script: |
+            set -e
+            # ensure docker installed
+            if ! command -v docker >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get -y install docker.io
+            fi
+            sudo systemctl enable --now docker
+
+            # choose what tag to deploy (from secret DEPLOY_PYTHON_VERSION, default to 3.11)
+            DEPLOY_VER="${{ secrets.DEPLOY_PYTHON_VERSION }}"
+            if [ -z "$DEPLOY_VER" ]; then
+              DEPLOY_VER="3.11"
+            fi
+
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/matrix-app:py${DEPLOY_VER}"
+            echo "Deploying $IMAGE"
+
+            sudo docker pull "$IMAGE"
+
+            sudo docker stop matrix-app || true
+            sudo docker rm matrix-app || true
+
+            sudo docker run -d --name matrix-app -p 80:5000 --restart unless-stopped "$IMAGE"
+            echo "Deployed $IMAGE"
+
