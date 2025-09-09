@@ -10,6 +10,7 @@ jobs:
     name: Test on Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11"]
     steps:
@@ -28,13 +29,14 @@ jobs:
           pip install pytest
 
       - name: Run tests
-        run: pytest -q
+        run: PYTHONPATH=. pytest -q
 
   build-and-push:
     name: Build & push Docker image (Python ${{ matrix.python-version }})
     needs: test
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11"]
     steps:
@@ -101,4 +103,3 @@ jobs:
 
             sudo docker run -d --name matrix-app -p 80:5000 --restart unless-stopped "$IMAGE"
             echo "Deployed $IMAGE"
-
